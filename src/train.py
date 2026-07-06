@@ -8,6 +8,7 @@ import xgboost as xgb
 import joblib
 
 from src.preprocessing import clean_and_basic_process, encode_categoricals
+from src.features import create_features
 from src.utils import save_model
 
 
@@ -110,11 +111,12 @@ def main():
     except:
         df = pd.read_csv(args.data_path, encoding="latin1")
 
-    # Clean + categorical encoding
+    # Clean, engineer features, and encode categoricals
     df = clean_and_basic_process(df)
+    df = create_features(df)
     df, encoders = encode_categoricals(df)
 
-    # Create features
+    # Create features (dropping ID and text columns, one-hot encoding tenure buckets)
     X, y = _prepare_features(df, encoders)
 
     # Save **feature names for inference alignment**
@@ -128,15 +130,26 @@ def main():
         X, y, test_size=args.test_size, random_state=42, stratify=y
     )
 
-    # XGBoost training
+    # XGBoost training with GPU fallback
+    tree_method = "hist"
+    predictor = "auto"
+    try:
+        # Check if GPU is available by trying to fit a trivial model
+        xgb.XGBClassifier(tree_method="gpu_hist").fit(np.array([[1]]), np.array([1]))
+        tree_method = "gpu_hist"
+        predictor = "gpu_predictor"
+        print("Using GPU for training...")
+    except Exception:
+        print("GPU not available. Using CPU ('hist' tree method)...")
+
     model = xgb.XGBClassifier(
         max_depth=6,
         learning_rate=0.05,
         n_estimators=500,
         subsample=0.8,
         colsample_bytree=0.8,
-        tree_method="gpu_hist",
-        predictor="gpu_predictor",
+        tree_method=tree_method,
+        predictor=predictor,
         use_label_encoder=False,
         eval_metric="logloss",
     )

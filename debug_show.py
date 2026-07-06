@@ -2,7 +2,7 @@
 import pandas as pd
 import sys
 
-p = "data/raw/Telco-Customer-Churn.csv"
+p = "data/raw/Telco-Customer-Churn-ALT-clean.csv"
 
 def try_csv(path, enc="utf-8"):
     try:

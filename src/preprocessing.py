@@ -231,9 +231,12 @@ def clean_and_basic_process(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def encode_categoricals(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, LabelEncoder]]:
+def encode_categoricals(
+    df: pd.DataFrame, pre_encoders: Optional[Dict[str, LabelEncoder]] = None
+) -> Tuple[pd.DataFrame, Dict[str, LabelEncoder]]:
     """
     Label-encode canonical categorical columns defined in CANONICAL_CATEGORICALS.
+    If pre_encoders is provided, use them to transform. Otherwise fit and transform.
     Returns (encoded_df, encoders_dict).
     """
     df = df.copy()
@@ -241,9 +244,17 @@ def encode_categoricals(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Label
 
     for col in CANONICAL_CATEGORICALS:
         if col in df.columns:
-            le = LabelEncoder()
-            df[col] = le.fit_transform(df[col].astype(str))
-            encoders[col] = le
+            if pre_encoders and col in pre_encoders:
+                le = pre_encoders[col]
+                # Map unseen classes to the first known class in the encoder to avoid crashing
+                classes = set(le.classes_)
+                df[col] = df[col].astype(str).apply(lambda x: x if x in classes else list(classes)[0])
+                df[col] = le.transform(df[col])
+                encoders[col] = le
+            else:
+                le = LabelEncoder()
+                df[col] = le.fit_transform(df[col].astype(str))
+                encoders[col] = le
 
     # Map the target column if present
     if "Churn" in df.columns:
@@ -254,3 +265,64 @@ def encode_categoricals(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Label
             df["Churn"] = pd.to_numeric(df["Churn"], errors="coerce").fillna(df["Churn"])
 
     return df, encoders
+
+
+def prepare_inference_features(df: pd.DataFrame, encoders: Dict[str, LabelEncoder], model_features: list) -> pd.DataFrame:
+    """
+    Prepare features for inference, aligning with the trained model columns.
+    1. Clean and basic process.
+    2. Extract engineered features (is_fiber, tenure_bucket).
+    3. Categorical encoding using pre-trained encoders.
+    4. One-hot encode tenure_bucket if it exists.
+    5. Drop text and non-numeric columns.
+    6. Align with model feature order and handle missing features.
+    """
+    from src.features import create_features
+
+    # 1. Clean and basic process
+    df = clean_and_basic_process(df)
+
+    # 2. Extract engineered features
+    try:
+        df = create_features(df)
+    except Exception:
+        pass
+
+    # 3. Categorical encoding using pre-trained encoders
+    df, _ = encode_categoricals(df, pre_encoders=encoders)
+
+    # 4. Drop standard text columns
+    drop_candidates = [
+        "CustomerID", "Customer Id", "Customer Id ",
+        "Count", "Country", "State", "City",
+        "Zip Code", "Lat Long", "Latitude", "Longitude",
+        "Churn Reason", "Churn Reason ",
+        "ChurnScore", "Churn Score", "Churn Value", "Churn Value ",
+        "CLTV", "Churn"
+    ]
+    for c in drop_candidates:
+        if c in df.columns:
+            df = df.drop(columns=[c])
+
+    # 5. One-hot encode tenure bucket if it exists
+    if "tenure_bucket" in df.columns:
+        dummies = pd.get_dummies(df["tenure_bucket"].astype(str), prefix="tenure")
+        df = pd.concat([df.drop(columns=["tenure_bucket"]), dummies], axis=1)
+
+    # 6. Keep only numeric columns
+    df = df.select_dtypes(include=["number"])
+
+    # 7. Fill missing numeric values
+    for col in df.columns:
+        if df[col].isna().any():
+            df[col] = df[col].fillna(df[col].median() if not df[col].isna().all() else 0)
+
+    # 8. Align EXACTLY to model training features (handling missing columns)
+    aligned = pd.DataFrame()
+    for col in model_features:
+        if col in df.columns:
+            aligned[col] = df[col]
+        else:
+            aligned[col] = 0  # Fill 0 for missing feature columns (e.g., missing one-hot dummies)
+
+    return aligned[model_features]

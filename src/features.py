@@ -31,7 +31,8 @@ def create_features(df: pd.DataFrame) -> pd.DataFrame:
     df["tenure_bucket"] = pd.cut(
         df[tenure_col].astype(float),
         bins=[0, 6, 12, 24, 48, 72, float("inf")],
-        labels=["0-6", "7-12", "13-24", "25-48", "49-72", "72+"]
+        labels=["0-6", "7-12", "13-24", "25-48", "49-72", "72+"],
+        include_lowest=True
     )
 
     return df

@@ -1,6 +1,6 @@
 import pandas as pd
 
-path = "data/raw/Telco-Customer-Churn.csv"
+path = "data/raw/Telco-Customer-Churn-ALT-clean.csv"
 delims = [",", ";", "\t", "|"]
 encodings = ["utf-8", "latin1", "utf-8-sig"]
 

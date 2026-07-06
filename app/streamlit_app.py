@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import numpy as np
 import sys
 import os
 
@@ -11,8 +10,7 @@ import os
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
-from src.preprocessing import clean_and_basic_process, encode_categoricals
-from src.features import create_features
+from src.preprocessing import prepare_inference_features
 
 # --------------------------------------------------
 # STREAMLIT CONFIG
@@ -28,41 +26,33 @@ MODEL_PATH = os.path.join(ROOT_DIR, "models", "xgb_model.joblib")
 ENC_PATH = os.path.join(ROOT_DIR, "models", "encoders.joblib")
 FEATURE_PATH = os.path.join(ROOT_DIR, "models", "feature_names.joblib")
 
-model = joblib.load(MODEL_PATH)
+@st.cache_resource
+def load_artifacts():
+    model = joblib.load(MODEL_PATH)
+    
+    try:
+        encoders = joblib.load(ENC_PATH)
+    except Exception:
+        encoders = {}
+        
+    try:
+        model_features = joblib.load(FEATURE_PATH)
+    except Exception:
+        model_features = None
+        st.warning("⚠ Model feature_names not found — aligning using numeric columns only.")
+        
+    return model, encoders, model_features
 
 try:
-    encoders = joblib.load(ENC_PATH)
-except:
-    encoders = {}
-
-try:
-    model_features = joblib.load(FEATURE_PATH)
-except:
-    model_features = None
-    st.warning("⚠ Model feature_names not found — aligning using numeric columns only.")
+    model, encoders, model_features = load_artifacts()
+except Exception as e:
+    st.error(f"❌ Error loading model artifacts: {str(e)}")
+    st.stop()
 
 # --------------------------------------------------
 # FILE UPLOADER
 # --------------------------------------------------
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
-
-
-def align_features(df, model_features):
-    """Ensure prediction dataframe matches EXACT order & columns expected by the model."""
-    if model_features is None:
-        # fallback: numeric only
-        return df.select_dtypes(include=["number"])
-
-    aligned = pd.DataFrame()
-
-    for col in model_features:
-        if col in df.columns:
-            aligned[col] = df[col]
-        else:
-            aligned[col] = 0  # missing column → fill default
-
-    return aligned[model_features]
-
 
 # --------------------------------------------------
 # MAIN LOGIC
@@ -71,53 +61,39 @@ if uploaded:
     # STEP 1: Read CSV safely
     try:
         df = pd.read_csv(uploaded, encoding="utf-8")
-    except:
+    except Exception:
         df = pd.read_csv(uploaded, encoding="latin1")
 
     st.subheader("📁 Raw Input Data (first 10 rows)")
     st.dataframe(df.head(10))
 
     # Debug counts
-    st.write("🔍 Rows BEFORE cleaning:", len(df))
+    st.write("🔍 Rows in upload:", len(df))
 
-    # STEP 2: Cleaning + normalization
-    df_clean = clean_and_basic_process(df)
-    st.write("🔍 Rows AFTER clean:", len(df_clean))
+    # STEP 2: Preprocess and Align Features
+    with st.spinner("Processing input data..."):
+        try:
+            df_aligned = prepare_inference_features(df, encoders, model_features)
+            st.success("✅ Data preprocessing and feature alignment successful!")
+            st.write("🔍 Features count for prediction:", df_aligned.shape[1])
+            st.write("🔍 Rows processed for prediction:", len(df_aligned))
+        except Exception as e:
+            st.error(f"❌ Preprocessing failed: {str(e)}")
+            st.stop()
 
-    # STEP 3: Encode categoricals
-    df_encoded, _ = encode_categoricals(df_clean)
-    st.write("🔍 Rows AFTER encoding:", len(df_encoded))
-
-    # STEP 4: Feature engineering (safe)
-    try:
-        df_feats = create_features(df_encoded)
-    except Exception:
-        df_feats = df_encoded.copy()
-
-    # Remove churn if exists
-    if "Churn" in df_feats.columns:
-        df_feats = df_feats.drop(columns=["Churn"])
-
-    st.write("🔍 Rows BEFORE feature alignment:", len(df_feats))
-
-    # STEP 5: Keep only numeric columns
-    df_feats = df_feats.select_dtypes(include=["number"])
-
-    # STEP 6: Align EXACTLY to model training features
-    df_aligned = align_features(df_feats, model_features)
-
-    st.write("🔍 Rows used for prediction:", len(df_aligned))
-    st.write("🔍 Final feature count:", df_aligned.shape[1])
-
-    # STEP 7: Prediction
-    preds = model.predict_proba(df_aligned)[:, 1]
-
-    df_output = df.copy()
-    df_output["churn_probability"] = preds
+    # STEP 3: Prediction
+    with st.spinner("Running prediction model..."):
+        try:
+            preds = model.predict_proba(df_aligned)[:, 1]
+            df_output = df.copy()
+            df_output["churn_probability"] = preds
+        except Exception as e:
+            st.error(f"❌ Prediction failed: {str(e)}")
+            st.stop()
 
     st.subheader("📈 Predictions")
     st.dataframe(df_output)
 
-    # STEP 8: Downloadable results
+    # STEP 4: Downloadable results
     csv = df_output.to_csv(index=False).encode("utf-8")
     st.download_button("⬇ Download Predictions", data=csv, file_name="churn_predictions.csv")
